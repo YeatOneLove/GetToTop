@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 import pygame
 
 
-WS_URL = "ws://127.0.0.1:8000/ws"
+WS_URL = "wss://edythe-aquiline-rick.ngrok-free.dev/ws"
 WIDTH = 800
 HEIGHT = 600
 FPS = 60
