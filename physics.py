@@ -11,7 +11,7 @@ COLLTYPE_FLOOR = 2
 def _limited_velocity(body: pymunk.Body, gravity: Vec2d, damping: float, dt: float) -> None:
     pymunk.Body.update_velocity(body, gravity, damping, dt)
     max_speed = 900
-    max_angular = 16
+    max_angular = 20  # Increased for better responsiveness
     if body.velocity.length > max_speed:
         body.velocity = body.velocity.normalized() * max_speed
     body.angular_velocity = max(-max_angular, min(max_angular, body.angular_velocity))
@@ -32,29 +32,38 @@ def create_ragdoll(
     x, y = position
 
     head_radius = 15
-    torso_size = (20, 40)
+    torso_size = (24, 40)  # Slightly wider torso for stability
     leg_length = 35
-    leg_thickness = 6
+    leg_thickness = 7  # Thicker legs for stability
     arm_length = 30
     arm_thickness = 5
 
-    head_mass = 1
-    torso_mass = 3
-    leg_mass = 1.5
-    arm_mass = 1.0
+    head_mass = 1.2
+    torso_mass = 4
+    leg_mass = 2.0
+    arm_mass = 1.2
 
     # Strong constraints so limbs stay attached even under impulses.
-    joint_max_force = 200_000
-    joint_max_bias = 2_000
-    limit_max_force = 120_000
-    limit_max_bias = 1_500
+    joint_max_force = 300_000  # Stronger joints
+    joint_max_bias = 3_000
+    limit_max_force = 200_000  # Stronger limits
+    limit_max_bias = 2_500
 
     group = collision_group if collision_group is not None else _next_collision_group()
     ragdoll_filter = pymunk.ShapeFilter(group=group)
 
     head_moment = pymunk.moment_for_circle(head_mass, 0, head_radius)
+    # Position ragdoll to start standing upright
+    # Head at the top, torso below, legs hanging down
+    torso_width, torso_height = torso_size
+    
+    # Calculate positions for standing posture
+    torso_y = y
+    head_y = torso_y - (head_radius + torso_height / 2)
+    leg_start_y = torso_y + torso_height / 2
+    
     head_body = pymunk.Body(head_mass, head_moment)
-    head_body.position = x, y
+    head_body.position = x, head_y
     head_shape = pymunk.Circle(head_body, head_radius)
     head_shape.friction = 0.8
     head_shape.elasticity = 0.0
@@ -62,10 +71,9 @@ def create_ragdoll(
     head_shape.collision_type = COLLTYPE_HEAD
     head_shape.label = "Head"
 
-    torso_width, torso_height = torso_size
     torso_moment = pymunk.moment_for_box(torso_mass, torso_size)
     torso_body = pymunk.Body(torso_mass, torso_moment)
-    torso_body.position = x, y + head_radius + torso_height / 2
+    torso_body.position = x, torso_y
     torso_shape = pymunk.Poly.create_box(torso_body, torso_size)
     torso_shape.friction = 0.9
     torso_shape.elasticity = 0.0
@@ -76,14 +84,15 @@ def create_ragdoll(
     )
     left_leg_body = pymunk.Body(leg_mass, leg_moment)
     right_leg_body = pymunk.Body(leg_mass, leg_moment)
-    left_leg_body.position = x - torso_width / 4, torso_body.position.y + torso_height / 2
-    right_leg_body.position = x + torso_width / 4, torso_body.position.y + torso_height / 2
+    # Position legs slightly wider for better stability
+    left_leg_body.position = x - torso_width / 3, leg_start_y
+    right_leg_body.position = x + torso_width / 3, leg_start_y
 
     left_leg_shape = pymunk.Segment(left_leg_body, (0, 0), (0, leg_length), leg_thickness / 2)
     right_leg_shape = pymunk.Segment(right_leg_body, (0, 0), (0, leg_length), leg_thickness / 2)
     for leg_shape in (left_leg_shape, right_leg_shape):
-        leg_shape.friction = 1.0
-        leg_shape.elasticity = 0.0
+        leg_shape.friction = 1.5  # Higher friction for better grip
+        leg_shape.elasticity = 0.1  # Slight bounce for more natural feel
         leg_shape.filter = ragdoll_filter
 
     # Arms (shoulders -> hands)
@@ -92,7 +101,7 @@ def create_ragdoll(
     left_arm_body = pymunk.Body(arm_mass, left_arm_moment)
     right_arm_body = pymunk.Body(arm_mass, right_arm_moment)
 
-    shoulder_y = torso_body.position.y - torso_height / 4
+    shoulder_y = torso_y - torso_height / 4
     left_arm_body.position = x - torso_width / 2, shoulder_y
     right_arm_body.position = x + torso_width / 2, shoulder_y
 
@@ -110,10 +119,10 @@ def create_ragdoll(
 
     neck_joint = pymunk.PivotJoint(torso_body, head_body, torso_body.local_to_world((0, -torso_height / 2)))
     left_hip_joint = pymunk.PivotJoint(
-        torso_body, left_leg_body, torso_body.local_to_world((-torso_width / 4, torso_height / 2))
+        torso_body, left_leg_body, torso_body.local_to_world((-torso_width / 3, torso_height / 2))
     )
     right_hip_joint = pymunk.PivotJoint(
-        torso_body, right_leg_body, torso_body.local_to_world((torso_width / 4, torso_height / 2))
+        torso_body, right_leg_body, torso_body.local_to_world((torso_width / 3, torso_height / 2))
     )
 
     left_shoulder_joint = pymunk.PivotJoint(
@@ -123,11 +132,12 @@ def create_ragdoll(
         torso_body, right_arm_body, torso_body.local_to_world((torso_width / 2, -torso_height / 4))
     )
 
-    neck_limit = pymunk.RotaryLimitJoint(torso_body, head_body, -math.pi / 4, math.pi / 4)
-    left_hip_limit = pymunk.RotaryLimitJoint(torso_body, left_leg_body, -math.pi / 3, math.pi / 6)
-    right_hip_limit = pymunk.RotaryLimitJoint(torso_body, right_leg_body, -math.pi / 6, math.pi / 3)
-    left_shoulder_limit = pymunk.RotaryLimitJoint(torso_body, left_arm_body, -math.pi / 2, math.pi / 6)
-    right_shoulder_limit = pymunk.RotaryLimitJoint(torso_body, right_arm_body, -math.pi / 6, math.pi / 2)
+    # More flexible joint limits for better movement
+    neck_limit = pymunk.RotaryLimitJoint(torso_body, head_body, -math.pi / 3, math.pi / 3)
+    left_hip_limit = pymunk.RotaryLimitJoint(torso_body, left_leg_body, -math.pi / 2, math.pi / 3)
+    right_hip_limit = pymunk.RotaryLimitJoint(torso_body, right_leg_body, -math.pi / 3, math.pi / 2)
+    left_shoulder_limit = pymunk.RotaryLimitJoint(torso_body, left_arm_body, -math.pi, math.pi / 3)
+    right_shoulder_limit = pymunk.RotaryLimitJoint(torso_body, right_arm_body, -math.pi / 3, math.pi)
 
     for j in (neck_joint, left_hip_joint, right_hip_joint, left_shoulder_joint, right_shoulder_joint):
         j.max_force = joint_max_force
@@ -187,10 +197,10 @@ def create_ragdoll(
 
 def _create_space(width: int, height: int) -> Tuple[pymunk.Space, pymunk.Shape]:
     space = pymunk.Space()
-    space.gravity = (0, 700)
-    space.damping = 0.9
-    space.iterations = 120
-    space.sleep_time_threshold = 0.5
+    space.gravity = (0, 500)  # Reduced gravity for better control
+    space.damping = 0.95  # Increased damping for stability
+    space.iterations = 150  # More iterations for stability
+    space.sleep_time_threshold = 0.3
 
     margin = 30
     thickness = 10
@@ -227,6 +237,34 @@ def _tether_ragdolls(space: pymunk.Space, torso_a: pymunk.Body, torso_b: pymunk.
     return joint
 
 
+def reset_ragdoll_to_standing(ragdoll: Dict[str, Any], x: float, y: float) -> None:
+    """
+    Reset a ragdoll to standing position at given coordinates.
+    """
+    head_radius = 15
+    torso_height = 40
+    
+    # Calculate positions for standing posture
+    torso_y = y
+    head_y = torso_y - (head_radius + torso_height / 2)
+    leg_start_y = torso_y + torso_height / 2
+    shoulder_y = torso_y - torso_height / 4
+    
+    # Reset positions (match the wider stance)
+    ragdoll["bodies"]["head"].position = x, head_y
+    ragdoll["bodies"]["torso"].position = x, torso_y
+    ragdoll["bodies"]["left_leg"].position = x - 8, leg_start_y  # Wider stance
+    ragdoll["bodies"]["right_leg"].position = x + 8, leg_start_y
+    ragdoll["bodies"]["left_arm"].position = x - 12, shoulder_y
+    ragdoll["bodies"]["right_arm"].position = x + 12, shoulder_y
+    
+    # Reset velocities and angles
+    for body in ragdoll["bodies"].values():
+        body.velocity = (0, 0)
+        body.angular_velocity = 0
+        body.angle = 0
+
+
 def tether_players(space: pymunk.Space, ragdoll_a: Dict[str, Any], ragdoll_b: Dict[str, Any]) -> pymunk.Constraint:
     """
     Connect players together by their hands (arm ends).
@@ -236,10 +274,16 @@ def tether_players(space: pymunk.Space, ragdoll_a: Dict[str, Any], ragdoll_b: Di
     right_arm_a: pymunk.Body = ragdoll_a["bodies"]["right_arm"]
     left_arm_b: pymunk.Body = ragdoll_b["bodies"]["left_arm"]
 
-    joint = pymunk.PinJoint(right_arm_a, left_arm_b, (arm_length, 0), (-arm_length, 0))
-    joint.max_force = 250_000
-    joint.max_bias = 3_000
-    joint.error_bias = (1 - 0.02) ** 60
+    # Use DampedSpring instead of PinJoint for more flexible connection
+    rest_length = 120  # Longer rest length so they're not pulled together
+    stiffness = 8000   # Spring stiffness
+    damping = 400      # Spring damping
+    
+    joint = pymunk.DampedSpring(
+        right_arm_a, left_arm_b, 
+        (arm_length, 0), (-arm_length, 0),
+        rest_length, stiffness, damping
+    )
     space.add(joint)
     return joint
 
@@ -255,8 +299,10 @@ def _run_local_test() -> None:
     clock = pygame.time.Clock()
 
     space, _floor = _create_space(width, height)
-    ragdoll1 = create_ragdoll(space, (width / 2 - 80, 200))
-    ragdoll2 = create_ragdoll(space, (width / 2 + 80, 200))
+    # Start ragdolls standing on the ground
+    start_y = height - 50 - 35 - 20 - 15  # floor_y - leg_length - torso_height/2 - head_radius
+    ragdoll1 = create_ragdoll(space, (width / 2 - 80, start_y))
+    ragdoll2 = create_ragdoll(space, (width / 2 + 80, start_y))
     tether_players(space, ragdoll1, ragdoll2)
 
     draw_options = DrawOptions(screen)

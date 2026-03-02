@@ -12,7 +12,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from physics import create_ragdoll, _create_space, tether_players, COLLTYPE_FLOOR, COLLTYPE_HEAD
+from physics import create_ragdoll, _create_space, tether_players, reset_ragdoll_to_standing, COLLTYPE_FLOOR, COLLTYPE_HEAD
 
 
 app = FastAPI()
@@ -31,19 +31,23 @@ _floor_shape: pymunk.Shape | None = None
 
 _game_over_until: float | None = None
 _pending_game_over_event: Dict[str, Any] | None = None
+_game_start_time: float | None = None
 
 
 def _init_world() -> None:
     """
     Initialize the shared Pymunk space and two tethered ragdolls.
     """
-    global space, ragdolls, _floor_shape
+    global space, ragdolls, _floor_shape, _game_start_time
+    _game_start_time = None  # Will be set when physics loop starts
 
     space_local, _floor = _create_space(WIDTH, HEIGHT)
     _floor_shape = _floor
 
-    ragdoll1 = create_ragdoll(space_local, (WIDTH / 2 - 80, 200))
-    ragdoll2 = create_ragdoll(space_local, (WIDTH / 2 + 80, 200))
+    # Start ragdolls standing on the ground (floor_y - leg_length - torso_height/2 - head_radius)
+    start_y = HEIGHT - 50 - 35 - 20 - 15  # floor_y - leg_length - torso_height/2 - head_radius
+    ragdoll1 = create_ragdoll(space_local, (WIDTH / 2 - 80, start_y))
+    ragdoll2 = create_ragdoll(space_local, (WIDTH / 2 + 80, start_y))
 
     tether_players(space_local, ragdoll1, ragdoll2)
 
@@ -163,7 +167,10 @@ async def _physics_loop() -> None:
     assert space is not None
     dt = 1.0 / TICK_RATE
 
-    global _pending_game_over_event, _game_over_until
+    global _pending_game_over_event, _game_over_until, _game_start_time
+    
+    if _game_start_time is None:
+        _game_start_time = asyncio.get_running_loop().time()
 
     while True:
         now = asyncio.get_running_loop().time()
@@ -181,6 +188,16 @@ async def _physics_loop() -> None:
         if _game_over_until is not None and now >= _game_over_until:
             _reset_world()
 
+        # Add slight stabilization for first few seconds to prevent immediate falling
+        game_time = now - _game_start_time
+        if game_time < 3.0:  # First 3 seconds
+            for ragdoll in ragdolls.values():
+                torso = ragdoll["bodies"]["torso"]
+                # Small stabilizing torque to counteract initial instability
+                if abs(torso.angle) > 0.2:  # If leaning too much
+                    stabilizing_torque = -torso.angle * 800  # Proportional to lean
+                    torso.angular_velocity += stabilizing_torque * dt
+
         # Multiple small steps per tick can help with stability.
         sub_steps = 6
         sub_dt = dt / sub_steps
@@ -192,14 +209,19 @@ async def _physics_loop() -> None:
 
 
 def _reset_world() -> None:
-    global _game_over_until, _pending_game_over_event
+    global _game_over_until, _pending_game_over_event, _game_start_time
     _game_over_until = None
     _pending_game_over_event = None
-    _init_world()
+    _game_start_time = asyncio.get_running_loop().time()  # Reset start time for stabilization
+    
+    # Reset ragdolls to standing positions instead of recreating everything
+    start_y = HEIGHT - 50 - 35 - 20 - 15  # floor_y - leg_length - torso_height/2 - head_radius
+    reset_ragdoll_to_standing(ragdolls["player1"], WIDTH / 2 - 80, start_y)
+    reset_ragdoll_to_standing(ragdolls["player2"], WIDTH / 2 + 80, start_y)
 
 def _apply_action(player: int, action: str) -> None:
     """
-    Apply an impulse to the chosen player's torso.
+    Apply forces to the chosen player for Get On Top style movement.
     player: 1 or 2
     action: 'jump' | 'left' | 'right'
     """
@@ -208,20 +230,40 @@ def _apply_action(player: int, action: str) -> None:
         return
 
     player_key = "player1" if player == 1 else "player2"
-    torso: pymunk.Body = ragdolls[player_key]["bodies"]["torso"]
+    ragdoll = ragdolls[player_key]
+    torso: pymunk.Body = ragdoll["bodies"]["torso"]
+    left_leg: pymunk.Body = ragdoll["bodies"]["left_leg"]
+    right_leg: pymunk.Body = ragdoll["bodies"]["right_leg"]
 
-    mass = float(torso.mass)
     if action == "jump":
-        # Note: +y is down in this project, so jump is negative y impulse.
-        torso.apply_impulse_at_local_point((0.0, -260.0 * mass), (0, 0))
+        # Apply strong upward impulse to torso and legs for jumping
+        jump_force = 350.0
+        torso.apply_impulse_at_local_point((0.0, -jump_force * torso.mass), (0, 0))
+        # Also apply smaller impulse to legs to help with jump
+        left_leg.apply_impulse_at_local_point((0.0, -jump_force * 0.3 * left_leg.mass), (0, 0))
+        right_leg.apply_impulse_at_local_point((0.0, -jump_force * 0.3 * right_leg.mass), (0, 0))
         return
 
     if action == "left":
-        torso.apply_impulse_at_local_point((-140.0 * mass, 0.0), (0, -10))
+        # Apply horizontal force to torso and rotational force for leaning
+        horizontal_force = 180.0
+        torso.apply_impulse_at_local_point((-horizontal_force * torso.mass, 0.0), (0, -5))
+        # Apply asymmetric forces to legs for better movement
+        left_leg.apply_impulse_at_local_point((-horizontal_force * 0.4 * left_leg.mass, 0.0), (0, 0))
+        right_leg.apply_impulse_at_local_point((-horizontal_force * 0.6 * right_leg.mass, 0.0), (0, 0))
+        # Add some torque for leaning effect
+        torso.angular_velocity += -2.0
         return
 
     if action == "right":
-        torso.apply_impulse_at_local_point((140.0 * mass, 0.0), (0, -10))
+        # Apply horizontal force to torso and rotational force for leaning
+        horizontal_force = 180.0
+        torso.apply_impulse_at_local_point((horizontal_force * torso.mass, 0.0), (0, -5))
+        # Apply asymmetric forces to legs for better movement
+        left_leg.apply_impulse_at_local_point((horizontal_force * 0.6 * left_leg.mass, 0.0), (0, 0))
+        right_leg.apply_impulse_at_local_point((horizontal_force * 0.4 * right_leg.mass, 0.0), (0, 0))
+        # Add some torque for leaning effect
+        torso.angular_velocity += 2.0
         return
 
 
