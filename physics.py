@@ -197,7 +197,7 @@ def create_ragdoll(
 
 def _create_space(width: int, height: int) -> Tuple[pymunk.Space, pymunk.Shape]:
     space = pymunk.Space()
-    space.gravity = (0, 500)  # Reduced gravity for better control
+    space.gravity = (0, 900)  # Heavier gravity for less floaty feel
     space.damping = 0.95  # Increased damping for stability
     space.iterations = 150  # More iterations for stability
     space.sleep_time_threshold = 0.3
